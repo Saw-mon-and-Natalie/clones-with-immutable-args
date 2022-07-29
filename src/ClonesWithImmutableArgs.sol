@@ -8,10 +8,6 @@ pragma solidity ^0.8.4;
 library ClonesWithImmutableArgs {
     error CreateFail();
 
-    uint256 private constant FREE_MEMORY_POINTER_SLOT = 0x40;
-    uint256 private constant BOOTSTRAP_LENGTH = 0x3f;
-    uint256 private constant ONE_WORD = 0x20;
-
     /// @notice Creates a clone proxy of the implementation contract, with immutable args
     /// @dev data cannot exceed 65535 bytes, since 2 bytes are used to store the data length
     /// @param implementation The implementation contract to clone
@@ -25,13 +21,16 @@ library ClonesWithImmutableArgs {
         unchecked {
             // solhint-disable-next-line no-inline-assembly
             assembly {
-                let extraLength := add(mload(data), 2) // +2 bytes for telling how much data there is appended to the call
-                let creationSize := add(extraLength, BOOTSTRAP_LENGTH)
+                let mBefore2 := mload(sub(data, 0x40))
+                let mBefore1 := mload(sub(data, 0x20))
+                let dataLength := mload(data)
+                let dataEnd := add(add(data, 0x20), dataLength)
+                let mAfter1 := mload(dataEnd)
+
+                let extraLength := add(dataLength, 2) // +2 bytes for telling how much data there is appended to the call
+                let creationSize := add(extraLength, 0x3f)
                 let runSize := sub(creationSize, 0x0a)
 
-                // free memory pointer
-                let ptr := mload(FREE_MEMORY_POINTER_SLOT)
-                
                 // -------------------------------------------------------------------------------------------------------------
                 // CREATION (10 bytes)
                 // -------------------------------------------------------------------------------------------------------------
@@ -93,65 +92,33 @@ library ClonesWithImmutableArgs {
                 // f3          | RETURN                |                         | [0 - rds): returndata, ... the rest might be dirty
 
                 mstore(
-                    ptr,
+                    data,
+                    0x5af43d3d93803e603357fd5bf3
+                )
+
+                mstore(
+                    sub(data, 0x0d),
+                    implementation
+                )
+
+                mstore(
+                    sub(data, 0x21),
                     or(
-                        hex"610000_3d_81_600a_3d_39_f3_36_3d_3d_37_3d_3d_3d_3d_610000_80_6035_36_39_36_01_3d_73",
+                        0x6100003d81600a3d39f3363d3d373d3d3d3d610000806035363936013d73,
                         or(
-                            shl(0xe8, runSize),
-                            shl(0x58, extraLength)
+                            shl(0xd8, runSize),
+                            shl(0x48, extraLength)
                         )
                     )
                 )
-                
-                mstore(
-                    add(ptr, 0x1e),
-                    shl(0x60, implementation)
-                )
+                mstore(dataEnd, shl(0xf0, extraLength))
+                instance := create(0, sub(data, 0x1f), creationSize)
 
-                mstore(
-                    add(ptr, 0x32),
-                    hex"5a_f4_3d_3d_93_80_3e_6033_57_fd_5b_f3"
-                )
-
-
-                // -------------------------------------------------------------------------------------------------------------
-                // APPENDED DATA (Accessible from extcodecopy)
-                // (but also send as appended data to the delegatecall)
-                // -------------------------------------------------------------------------------------------------------------
-
-                let counter := mload(data)
-                let copyPtr := add(ptr, BOOTSTRAP_LENGTH)
-                let dataPtr := add(data, ONE_WORD)
-
-                for {} true {} {
-                    if lt(counter, ONE_WORD) {
-                        break
-                    }
-
-                    mstore(copyPtr, mload(dataPtr))
-
-                    copyPtr := add(copyPtr, ONE_WORD)
-                    dataPtr := add(dataPtr, ONE_WORD)
-
-                    counter := sub(counter, ONE_WORD)
-                }
-                    
-                let mask := shl(
-                    mul(0x8, sub(ONE_WORD, counter)), 
-                    not(0)
-                )
-
-                mstore(copyPtr, and(mload(dataPtr), mask))
-                copyPtr := add(copyPtr, counter)
-                mstore(copyPtr, shl(0xf0, extraLength))
-
-                instance := create(0, ptr, creationSize)
-
-                // Update free memory pointer
-                mstore(FREE_MEMORY_POINTER_SLOT, add(ptr, creationSize))
+                mstore(data, dataLength)
+                mstore(sub(data, 0x20), mBefore1)
+                mstore(sub(data, 0x40), mBefore2)
+                mstore(dataEnd, mAfter1)
             }
-
-            
 
             if (instance == address(0)) {
                 revert CreateFail();
